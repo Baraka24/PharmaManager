@@ -6,26 +6,51 @@
     commandes: 'pm_commandes',
     recus: 'pm_recus',
     factures: 'pm_factures',
+    settings: 'pm_settings',
   };
 
   // Helpers
   const qs = (sel, el = document) => el.querySelector(sel);
   const qsa = (sel, el = document) => Array.from(el.querySelectorAll(sel));
+  const on = (sel, evt, handler) => {
+    const el = qs(sel);
+    if (el) el.addEventListener(evt, handler);
+  };
 
   const getData = (key) => JSON.parse(localStorage.getItem(key) || '[]');
   const setData = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+  const getSettings = () => {
+    const s = JSON.parse(localStorage.getItem(KEYS.settings) || '{}');
+    return { stockThreshold: 10, expiryMonths: 1, ...s };
+  };
+  const setSettings = (partial) => {
+    const s = getSettings();
+    localStorage.setItem(KEYS.settings, JSON.stringify({ ...s, ...partial }));
+  };
+
+  const uid = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const pushData = (key, item) => {
     const d = getData(key);
-    d.push(item);
+    d.push({ id: uid(), ...item });
     setData(key, d);
   };
+  const updateData = (key, id, updater) => {
+    const d = getData(key);
+    const i = d.findIndex((x) => x.id === id);
+    if (i >= 0) {
+      d[i] = typeof updater === 'function' ? { ...d[i], ...updater(d[i]) } : { ...d[i], ...updater };
+      setData(key, d);
+      return true;
+    }
+    return false;
+  };
+  const deleteData = (key, id) => setData(key, getData(key).filter((x) => x.id !== id));
   const clearAll = () => {
     Object.values(KEYS).forEach((k) => localStorage.removeItem(k));
   };
 
   const toISODate = (val) => {
     if (!val) return '';
-    // ensure yyyy-mm-dd
     const d = new Date(val);
     if (isNaN(d)) return '';
     return d.toISOString().slice(0, 10);
@@ -40,10 +65,18 @@
     return true;
   };
 
+  const diffInMonths = (dateStr) => {
+    if (!dateStr) return Infinity;
+    const today = new Date();
+    const d = new Date(dateStr);
+    return (d.getFullYear() - today.getFullYear()) * 12 + (d.getMonth() - today.getMonth());
+  };
+
   // Toast
   let toast;
   function showToast(msg, ok = true) {
     const el = qs('#liveToast');
+    if (!el) return alert(msg);
     qs('#toastMsg').textContent = msg;
     el.classList.remove('text-bg-success', 'text-bg-danger');
     el.classList.add(ok ? 'text-bg-success' : 'text-bg-danger');
@@ -80,11 +113,35 @@
   function renderInventaire(filter = {}) {
     const tbody = qs('#tblInventaire tbody');
     tbody.innerHTML = '';
+    const { stockThreshold, expiryMonths } = getSettings();
+    // mirror settings in UI if present
+    const thInput = qs('#stockThreshold');
+    const exInput = qs('#expiryMonths');
+    if (thInput && !thInput.value) thInput.value = stockThreshold;
+    if (exInput && !exInput.value) exInput.value = expiryMonths;
+
     const data = getData(KEYS.inventaire).filter((r) =>
       !filter.from && !filter.to ? true : inRange(r.date, filter.from, filter.to)
     );
+
+    let low = 0, soon = 0, expired = 0;
+
     for (const r of data) {
+      const expMonths = diffInMonths(r.dateExpiration);
+      const isExpired = r.dateExpiration && new Date(r.dateExpiration) < new Date();
+      const isSoon = !isExpired && expMonths >= 0 && expMonths <= Number(expiryMonths || 0);
+      const isLow = Number(r.quantite) <= Number(stockThreshold || 0);
+      if (isExpired) expired++; else if (isSoon) soon++;
+      if (isLow) low++;
+
+      const badges = [];
+      if (isLow) badges.push('<span class="badge text-bg-warning me-1"><i class="bi bi-arrow-down-circle"></i> Stock bas</span>');
+      if (isSoon) badges.push('<span class="badge text-bg-info me-1"><i class="bi bi-hourglass-split"></i> Exp. proche</span>');
+      if (isExpired) badges.push('<span class="badge text-bg-danger me-1"><i class="bi bi-exclamation-octagon"></i> Expiré</span>');
+
       const tr = document.createElement('tr');
+      if (isExpired) tr.classList.add('table-danger');
+      else if (isSoon || isLow) tr.classList.add('table-warning');
       tr.innerHTML = `
         <td>${toISODate(r.date)}</td>
         <td>${escapeHtml(r.inventaireNum)}</td>
@@ -92,8 +149,27 @@
         <td>${escapeHtml(r.produit)}</td>
         <td class="text-end">${Number(r.quantite)}</td>
         <td class="text-end">${Number(r.quantiteComparee)}</td>
-        <td>${toISODate(r.dateExpiration)}</td>`;
+        <td>${toISODate(r.dateExpiration)}</td>
+        <td>${badges.join(' ')}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-outline-primary me-1 btn-action" data-action="edit" data-id="${r.id}"><i class="bi bi-pencil"></i></button>
+          <button class="btn btn-sm btn-outline-danger me-1 btn-action" data-action="print" data-id="${r.id}"><i class="bi bi-filetype-pdf"></i></button>
+          <button class="btn btn-sm btn-outline-secondary btn-action" data-action="delete" data-id="${r.id}"><i class="bi bi-trash"></i></button>
+        </td>`;
       tbody.appendChild(tr);
+    }
+
+    const alertBox = qs('#invAlerts');
+    if (alertBox) {
+      if (data.length === 0) alertBox.innerHTML = '';
+      else alertBox.innerHTML = `
+        <div class="alert alert-info d-flex align-items-center gap-3" role="alert">
+          <div><i class="bi bi-bell"></i></div>
+          <div>
+            <div><strong>Alertes inventaire:</strong> Stock bas: <span class="badge text-bg-warning">${low}</span> | Exp. proche: <span class="badge text-bg-info">${soon}</span> | Expiré: <span class="badge text-bg-danger">${expired}</span></div>
+            <div class="small text-muted">Seuil: ${stockThreshold} | Exp. dans ${expiryMonths} mois</div>
+          </div>
+        </div>`;
     }
   }
 
@@ -110,7 +186,12 @@
         <td>${escapeHtml(r.numero)}</td>
         <td>${escapeHtml(r.code)}</td>
         <td>${escapeHtml(r.produit)}</td>
-        <td class="text-end">${Number(r.quantite)}</td>`;
+        <td class="text-end">${Number(r.quantite)}</td>
+        <td class="text-center">
+          <button class="btn btn-sm btn-outline-primary me-1 btn-action" data-table="${tableSel}" data-action="edit" data-id="${r.id}"><i class="bi bi-pencil"></i></button>
+          <button class="btn btn-sm btn-outline-danger me-1 btn-action" data-table="${tableSel}" data-action="print" data-id="${r.id}"><i class="bi bi-filetype-pdf"></i></button>
+          <button class="btn btn-sm btn-outline-secondary btn-action" data-table="${tableSel}" data-action="delete" data-id="${r.id}"><i class="bi bi-trash"></i></button>
+        </td>`;
       tbody.appendChild(tr);
     }
   }
@@ -124,36 +205,11 @@
       .replace(/'/g, '&#039;');
   }
 
-  // CSV export
-  function tableToCsv(table) {
-    const rows = qsa('tr', table).map((tr) =>
-      qsa('th,td', tr)
-        .map((cell) => {
-          let txt = cell.innerText.replaceAll('"', '""');
-          if (txt.search(/[",\n]/) >= 0) txt = '"' + txt + '"';
-          return txt;
-        })
-        .join(',')
-    );
-    return rows.join('\n');
-  }
-  function download(filename, text) {
-    const blob = new Blob([text], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', filename);
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }
-
-  // Forms submit handlers
-  qs('#formInventaire').addEventListener('submit', (e) => {
+  // Forms submit handlers (create or update)
+  on('#formInventaire', 'submit', (e) => {
     e.preventDefault();
     const f = e.target;
+    const editId = f.editId?.value;
     const rec = {
       inventaireNum: f.inventaireNum.value.trim(),
       code: f.code.value.trim(),
@@ -162,119 +218,165 @@
       quantiteComparee: Number(f.quantiteComparee.value || 0),
       dateExpiration: f.dateExpiration.value,
       date: f.date.value,
-      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    pushData(KEYS.inventaire, rec);
+    if (editId) {
+      updateData(KEYS.inventaire, editId, rec);
+      showToast("Article d'inventaire mis à jour.");
+    } else {
+      pushData(KEYS.inventaire, { ...rec, createdAt: new Date().toISOString() });
+      showToast("Article d'inventaire ajouté.");
+    }
     f.reset();
     renderInventaire({ from: qs('#invFrom').value, to: qs('#invTo').value });
     updateStats();
-    showToast('Article d\'inventaire ajouté.');
   });
 
-  qs('#formCommandes').addEventListener('submit', (e) => {
+  on('#formCommandes', 'submit', (e) => {
     e.preventDefault();
     const f = e.target;
+    const editId = f.editId?.value;
     const rec = {
       numero: f.numero.value.trim(),
       date: f.date.value,
       code: f.code.value.trim(),
       produit: f.produit.value.trim(),
       quantite: Number(f.quantite.value || 0),
-      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    pushData(KEYS.commandes, rec);
+    if (editId) {
+      updateData(KEYS.commandes, editId, rec);
+      showToast('Commande mise à jour.');
+    } else {
+      pushData(KEYS.commandes, { ...rec, createdAt: new Date().toISOString() });
+      showToast('Commande ajoutée.');
+    }
     f.reset();
     renderSimpleTable(KEYS.commandes, '#tblCommandes', { from: qs('#cmdFrom').value, to: qs('#cmdTo').value });
     updateStats();
-    showToast('Commande ajoutée.');
   });
 
-  qs('#formRecus').addEventListener('submit', (e) => {
+  on('#formRecus', 'submit', (e) => {
     e.preventDefault();
     const f = e.target;
+    const editId = f.editId?.value;
     const rec = {
       numero: f.numero.value.trim(),
       date: f.date.value,
       code: f.code.value.trim(),
       produit: f.produit.value.trim(),
       quantite: Number(f.quantite.value || 0),
-      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    pushData(KEYS.recus, rec);
+    if (editId) {
+      updateData(KEYS.recus, editId, rec);
+      showToast('Reçu mis à jour.');
+    } else {
+      pushData(KEYS.recus, { ...rec, createdAt: new Date().toISOString() });
+      showToast('Reçu ajouté.');
+    }
     f.reset();
     renderSimpleTable(KEYS.recus, '#tblRecus', { from: qs('#recFrom').value, to: qs('#recTo').value });
     updateStats();
-    showToast('Reçu ajouté.');
   });
 
-  qs('#formFactures').addEventListener('submit', (e) => {
+  on('#formFactures', 'submit', (e) => {
     e.preventDefault();
     const f = e.target;
+    const editId = f.editId?.value;
     const rec = {
       numero: f.numero.value.trim(),
       date: f.date.value,
       code: f.code.value.trim(),
       produit: f.produit.value.trim(),
       quantite: Number(f.quantite.value || 0),
-      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    pushData(KEYS.factures, rec);
+    if (editId) {
+      updateData(KEYS.factures, editId, rec);
+      showToast('Facture mise à jour.');
+    } else {
+      pushData(KEYS.factures, { ...rec, createdAt: new Date().toISOString() });
+      showToast('Facture ajoutée.');
+    }
     f.reset();
     renderSimpleTable(KEYS.factures, '#tblFactures', { from: qs('#facFrom').value, to: qs('#facTo').value });
     updateStats();
-    showToast('Facture ajoutée.');
   });
 
-  // Filters and CSV buttons
-  qs('#btnInvFilter').addEventListener('click', (e) => {
+  // Filters + Print buttons
+  on('#btnInvFilter', 'click', (e) => {
     e.preventDefault();
     renderInventaire({ from: qs('#invFrom').value, to: qs('#invTo').value });
   });
-  qs('#btnInvCsv').addEventListener('click', (e) => {
+  on('#btnInvPrint', 'click', (e) => {
     e.preventDefault();
-    const csv = tableToCsv(qs('#tblInventaire'));
-    download(`inventaire_${Date.now()}.csv`, csv);
+    printTable('#tblInventaire', 'Inventaire');
+  });
+  on('#btnInvPrintList', 'click', (e) => {
+    e.preventDefault();
+    printTable('#tblInventaire', 'Inventaire (filtré)');
+  });
+  on('#btnInvApplySettings', 'click', (e) => {
+    e.preventDefault();
+    const stockThreshold = Number(qs('#stockThreshold')?.value || 0);
+    const expiryMonths = Number(qs('#expiryMonths')?.value || 0);
+    setSettings({ stockThreshold, expiryMonths });
+    renderInventaire({ from: qs('#invFrom').value, to: qs('#invTo').value });
+    showToast('Paramètres d\'alertes appliqués.');
   });
 
-  qs('#btnCmdFilter').addEventListener('click', (e) => {
+  on('#btnCmdFilter', 'click', (e) => {
     e.preventDefault();
     renderSimpleTable(KEYS.commandes, '#tblCommandes', { from: qs('#cmdFrom').value, to: qs('#cmdTo').value });
   });
-  qs('#btnCmdCsv').addEventListener('click', (e) => {
+  on('#btnCmdPrint', 'click', (e) => {
     e.preventDefault();
-    const csv = tableToCsv(qs('#tblCommandes'));
-    download(`commandes_${Date.now()}.csv`, csv);
+    printTable('#tblCommandes', 'Commandes');
+  });
+  on('#btnCmdPrintList', 'click', (e) => {
+    e.preventDefault();
+    printTable('#tblCommandes', 'Commandes (filtré)');
   });
 
-  qs('#btnRecFilter').addEventListener('click', (e) => {
+  on('#btnRecFilter', 'click', (e) => {
     e.preventDefault();
     renderSimpleTable(KEYS.recus, '#tblRecus', { from: qs('#recFrom').value, to: qs('#recTo').value });
   });
-  qs('#btnRecCsv').addEventListener('click', (e) => {
+  on('#btnRecPrint', 'click', (e) => {
     e.preventDefault();
-    const csv = tableToCsv(qs('#tblRecus'));
-    download(`recus_${Date.now()}.csv`, csv);
+    printTable('#tblRecus', 'Reçus');
+  });
+  on('#btnRecPrintList', 'click', (e) => {
+    e.preventDefault();
+    printTable('#tblRecus', 'Reçus (filtré)');
   });
 
-  qs('#btnFacFilter').addEventListener('click', (e) => {
+  on('#btnFacFilter', 'click', (e) => {
     e.preventDefault();
     renderSimpleTable(KEYS.factures, '#tblFactures', { from: qs('#facFrom').value, to: qs('#facTo').value });
   });
-  qs('#btnFacCsv').addEventListener('click', (e) => {
+  on('#btnFacPrint', 'click', (e) => {
     e.preventDefault();
-    const csv = tableToCsv(qs('#tblFactures'));
-    download(`factures_${Date.now()}.csv`, csv);
+    printTable('#tblFactures', 'Factures');
+  });
+  on('#btnFacPrintList', 'click', (e) => {
+    e.preventDefault();
+    printTable('#tblFactures', 'Factures (filtré)');
   });
 
   // Rapports
-  qs('#btnRapFilter').addEventListener('click', (e) => {
+  on('#btnRapFilter', 'click', (e) => {
     e.preventDefault();
     renderRapports();
   });
-  qs('#btnRapCsv').addEventListener('click', (e) => {
+  on('#btnRapPrint', 'click', (e) => {
     e.preventDefault();
-    const csv = tableToCsv(qs('#tblRapports'));
-    download(`rapport_${qs('#rapportType').value}_${Date.now()}.csv`, csv);
+    printTable('#tblRapports', 'Rapport');
+  });
+  on('#btnRapPrintList', 'click', (e) => {
+    e.preventDefault();
+    printTable('#tblRapports', 'Rapport (filtré)');
   });
 
   function renderRapports() {
@@ -326,7 +428,132 @@
     }
   }
 
-  // Navbar handlers
+  // Delegated actions for tables
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-action');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const id = btn.getAttribute('data-id');
+    const tableSel = btn.getAttribute('data-table');
+
+    if (qs('#section-inventaire') && btn.closest('#tblInventaire')) {
+      if (action === 'edit') return editInventaire(id);
+      if (action === 'print') return printRecord('inventaire', id, 'Fiche inventaire');
+      if (action === 'delete') {
+        if (confirm('Supprimer cet élément ?')) {
+          deleteData(KEYS.inventaire, id);
+          renderInventaire({ from: qs('#invFrom').value, to: qs('#invTo').value });
+          updateStats();
+          showToast('Élément supprimé.');
+        }
+      }
+    }
+
+    const map = {
+      '#tblCommandes': { key: KEYS.commandes, form: '#formCommandes', section: 'commandes', title: 'Commande' },
+      '#tblRecus': { key: KEYS.recus, form: '#formRecus', section: 'recus', title: 'Reçu' },
+      '#tblFactures': { key: KEYS.factures, form: '#formFactures', section: 'factures', title: 'Facture' },
+    };
+    const info = Object.entries(map).find(([sel]) => btn.closest(sel));
+    if (!info) return;
+    const [, cfg] = info;
+    if (action === 'edit') return editSimple(cfg.key, cfg.form, cfg.section, id);
+    if (action === 'print') return printRecord(cfg.key, id, cfg.title);
+    if (action === 'delete') {
+      if (confirm('Supprimer cet élément ?')) {
+        deleteData(cfg.key, id);
+        if (cfg.key === KEYS.commandes) renderSimpleTable(KEYS.commandes, '#tblCommandes', { from: qs('#cmdFrom').value, to: qs('#cmdTo').value });
+        if (cfg.key === KEYS.recus) renderSimpleTable(KEYS.recus, '#tblRecus', { from: qs('#recFrom').value, to: qs('#recTo').value });
+        if (cfg.key === KEYS.factures) renderSimpleTable(KEYS.factures, '#tblFactures', { from: qs('#facFrom').value, to: qs('#facTo').value });
+        updateStats();
+        showToast('Élément supprimé.');
+      }
+    }
+  });
+
+  function editInventaire(id) {
+    const rec = getData(KEYS.inventaire).find((x) => x.id === id);
+    if (!rec) return;
+    showSection('inventaire');
+    const f = qs('#formInventaire');
+    f.editId.value = id;
+    f.inventaireNum.value = rec.inventaireNum || '';
+    f.code.value = rec.code || '';
+    f.produit.value = rec.produit || '';
+    f.quantite.value = rec.quantite ?? '';
+    f.quantiteComparee.value = rec.quantiteComparee ?? '';
+    f.dateExpiration.value = toISODate(rec.dateExpiration);
+    f.date.value = toISODate(rec.date);
+    f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function editSimple(key, formSel, section, id) {
+    const rec = getData(key).find((x) => x.id === id);
+    if (!rec) return;
+    showSection(section);
+    const f = qs(formSel);
+    f.editId.value = id;
+    f.numero.value = rec.numero || '';
+    f.code.value = rec.code || '';
+    f.produit.value = rec.produit || '';
+    f.quantite.value = rec.quantite ?? '';
+    f.date.value = toISODate(rec.date);
+    f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function printRecord(keyOrName, id, title) {
+    let rec, fields = [];
+    if (keyOrName === 'inventaire') {
+      rec = getData(KEYS.inventaire).find((x) => x.id === id);
+      if (!rec) return;
+      fields = [
+        ['Date', toISODate(rec.date)],
+        ['N° inventaire', rec.inventaireNum],
+        ['Code', rec.code],
+        ['Produit', rec.produit],
+        ['Quantité', rec.quantite],
+        ['Quantité comparée', rec.quantiteComparee],
+        ['Expiration', toISODate(rec.dateExpiration)],
+      ];
+    } else {
+      let key = keyOrName;
+      if (typeof keyOrName !== 'string') key = '';
+      rec = getData(key).find((x) => x.id === id);
+      if (!rec) return;
+      fields = [
+        ['Date', toISODate(rec.date)],
+        ['N°', rec.numero],
+        ['Code', rec.code],
+        ['Produit', rec.produit],
+        ['Quantité', rec.quantite],
+      ];
+    }
+    const w = window.open('', '_blank');
+    const style = `body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell; padding:20px;} h2{margin-top:0} table{width:100%; border-collapse:collapse} td{padding:6px 8px; border:1px solid #ddd}`;
+    const rows = fields.map(([k, v]) => `<tr><td><strong>${k}</strong></td><td>${escapeHtml(v)}</td></tr>`).join('');
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${style}</style></head><body><h2>${escapeHtml(title)}</h2><table>${rows}</table><script>window.onload=()=>{window.print(); setTimeout(()=>window.close(), 200);};</script></body></html>`);
+    w.document.close();
+  }
+
+  function printTable(tableSel, title) {
+    const table = qs(tableSel);
+    if (!table) return;
+    const clone = table.cloneNode(true);
+    // remove Actions column only if header contains it
+    const headerCells = clone.tHead ? Array.from(clone.tHead.rows[0].cells) : [];
+    const lastHeader = headerCells[headerCells.length - 1];
+    const hasActions = lastHeader && /actions/i.test(lastHeader.textContent || '');
+    if (hasActions) {
+      const lastIdx = headerCells.length - 1;
+      Array.from(clone.rows).forEach((tr) => tr.cells[lastIdx] && tr.deleteCell(lastIdx));
+    }
+    const style = `body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell; padding:20px;} h2{margin-top:0} table{width:100%; border-collapse:collapse} th,td{padding:6px 8px; border:1px solid #ddd; text-align:left} th{text-align:left}`;
+    const w = window.open('', '_blank');
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${style}</style></head><body><h2>${escapeHtml(title)}</h2>${clone.outerHTML}<script>window.onload=()=>{window.print(); setTimeout(()=>window.close(), 200);};</script></body></html>`);
+    w.document.close();
+  }
+
+  // Navbar and dashboard navigation
   qsa('[data-section]').forEach((el) => {
     el.addEventListener('click', (e) => {
       const name = e.currentTarget.getAttribute('data-section');
@@ -337,15 +564,21 @@
     });
   });
 
+  // Top toolbar add buttons scroll to forms
+  on('#btnInvAddTop', 'click', (e) => { e.preventDefault(); showSection('inventaire'); qs('#formInventaire')?.scrollIntoView({ behavior:'smooth'}); });
+  on('#btnCmdAddTop', 'click', (e) => { e.preventDefault(); showSection('commandes'); qs('#formCommandes')?.scrollIntoView({ behavior:'smooth'}); });
+  on('#btnRecAddTop', 'click', (e) => { e.preventDefault(); showSection('recus'); qs('#formRecus')?.scrollIntoView({ behavior:'smooth'}); });
+  on('#btnFacAddTop', 'click', (e) => { e.preventDefault(); showSection('factures'); qs('#formFactures')?.scrollIntoView({ behavior:'smooth'}); });
+
   // Demo data
-  qs('#btnLoadDemo').addEventListener('click', () => {
+  on('#btnLoadDemo', 'click', () => {
     seedDemoData();
     renderAll();
     showToast('Données de démonstration chargées.');
   });
 
   // Clear all
-  qs('#btnClearAll').addEventListener('click', () => {
+  on('#btnClearAll', 'click', () => {
     if (confirm('Voulez-vous vraiment effacer toutes les données ?')) {
       clearAll();
       renderAll();
@@ -364,17 +597,17 @@
     if (getData(KEYS.inventaire).length + getData(KEYS.commandes).length + getData(KEYS.recus).length + getData(KEYS.factures).length > 0) return;
 
     const inv = [
-      { inventaireNum: 'INV-001', code: 'P-001', produit: 'Paracetamol 500mg', quantite: 120, quantiteComparee: 118, dateExpiration: daysAgo(-200), date: daysAgo(30) },
-      { inventaireNum: 'INV-002', code: 'P-002', produit: 'Ibuprofène 400mg', quantite: 80, quantiteComparee: 80, dateExpiration: daysAgo(-90), date: daysAgo(20) },
-      { inventaireNum: 'INV-003', code: 'P-003', produit: 'Amoxicilline 1g', quantite: 60, quantiteComparee: 58, dateExpiration: daysAgo(-30), date: daysAgo(10) },
+      { inventaireNum: 'INV-001', code: 'P-001', produit: 'Paracetamol 500mg', quantite: 5, quantiteComparee: 5, dateExpiration: daysAgo(10), date: daysAgo(30) }, // low and soon
+      { inventaireNum: 'INV-002', code: 'P-002', produit: 'Ibuprofène 400mg', quantite: 80, quantiteComparee: 80, dateExpiration: daysAgo(-20), date: daysAgo(20) }, // future
+      { inventaireNum: 'INV-003', code: 'P-003', produit: 'Amoxicilline 1g', quantite: 60, quantiteComparee: 58, dateExpiration: daysAgo(365), date: daysAgo(10) }, // expired
     ];
-    setData(KEYS.inventaire, inv.map((x) => ({ ...x, createdAt: new Date().toISOString() })));
+    setData(KEYS.inventaire, inv.map((x) => ({ id: uid(), ...x, createdAt: new Date().toISOString() })));
 
     const makeSimple = (prefix) => [
       { numero: `${prefix}-1001`, date: daysAgo(25), code: 'P-001', produit: 'Paracetamol 500mg', quantite: 20 },
       { numero: `${prefix}-1002`, date: daysAgo(15), code: 'P-002', produit: 'Ibuprofène 400mg', quantite: 10 },
       { numero: `${prefix}-1003`, date: daysAgo(5), code: 'P-003', produit: 'Amoxicilline 1g', quantite: 5 },
-    ];
+    ].map((x) => ({ id: uid(), ...x, createdAt: new Date().toISOString() }));
     setData(KEYS.commandes, makeSimple('CMD'));
     setData(KEYS.recus, makeSimple('REC'));
     setData(KEYS.factures, makeSimple('FAC'));

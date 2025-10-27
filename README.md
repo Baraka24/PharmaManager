@@ -12,16 +12,19 @@ Ou ouvrez directement `index.html` dans un navigateur récent.
 
 ## Technologies
 
-- Bootstrap 5.3.3 (CDN)
+- Bootstrap 5.3.3 (CDN) + Bootstrap Icons
 - JavaScript pur (localStorage)
 
 ## Fonctionnalités
 
 - Navigation: Tableau de bord, Inventaire, Commandes, Reçus, Factures, Rapports
-- Formulaires d'ajout pour chaque module
+- Icônes cliquables sur le menu, le tableau de bord et les boutons
+- Formulaires d'ajout pour chaque module, édition et suppression en ligne
+- Actions par ligne: Éditer, Supprimer, Imprimer PDF (sauf Rapports)
+- Impressions PDF: fiche d'un enregistrement et tableau filtré
+- Inventaire: alertes de stock bas et d'expiration (paramètres configurables: seuil et mois)
 - Listes avec filtres par période (Du/Au)
 - Rapports entre deux dates avec totaux
-- Export CSV des tableaux
 - Chargement de données de démonstration
 - Bouton de réinitialisation des données
 
@@ -33,5 +36,5 @@ Ou ouvrez directement `index.html` dans un navigateur récent.
 ## Structure
 
 - `index.html` — Application SPA simple avec sections et navigation
-- `assets/js/app.js` — Logique de l'application (stockage, rendu, rapports)
+- `assets/js/app.js` — Logique de l'application (stockage, rendu, actions, impressions, alertes)
 - `assets/css/styles.css` — Styles légers
