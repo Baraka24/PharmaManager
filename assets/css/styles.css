@@ -1,0 +1,5 @@
+body { background-color: #f6f8fb; }
+.navbar-brand { letter-spacing: 0.5px; }
+.app-section { min-height: 50vh; }
+.table thead th { white-space: nowrap; }
+.card .form-label { font-weight: 600; }
